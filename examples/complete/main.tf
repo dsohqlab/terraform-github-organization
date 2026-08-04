@@ -4,6 +4,7 @@ module "organization" {
 
   settings = {
     name                                                         = "example"
+    display_name                                                 = "Example Corp"
     company                                                      = "Example Corp"
     description                                                  = "Example GitHub Organization"
     email                                                        = "info@example.com"
