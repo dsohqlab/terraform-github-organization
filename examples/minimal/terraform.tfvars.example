@@ -1,0 +1,3 @@
+github_owner    = "my-org"
+github_token    = "ghp_xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
+billing_email   = "billing@example.com"

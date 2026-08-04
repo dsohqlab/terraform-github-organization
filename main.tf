@@ -35,10 +35,20 @@ resource "github_actions_organization_permissions" "this" {
   allowed_actions      = var.action_permissions.allowed_actions
   enabled_repositories = var.action_permissions.enabled_repositories
 
-  allowed_actions_config {
-    github_owned_allowed = var.action_permissions.github_owned_allowed
-    patterns_allowed     = var.action_permissions.patterns_allowed
-    verified_allowed     = var.action_permissions.verified_allowed
+  dynamic "allowed_actions_config" {
+    for_each = var.action_permissions.allowed_actions == "selected" ? [1] : []
+    content {
+      github_owned_allowed = var.action_permissions.github_owned_allowed
+      patterns_allowed     = var.action_permissions.patterns_allowed
+      verified_allowed     = var.action_permissions.verified_allowed
+    }
+  }
+
+  dynamic "enabled_repositories_config" {
+    for_each = var.action_permissions.enabled_repositories == "selected" ? [1] : []
+    content {
+      repository_ids = [for name in var.action_permissions.enabled_repository_names : github_repository.this[name].repo_id]
+    }
   }
 }
 
@@ -57,13 +67,13 @@ resource "github_team" "this" {
 resource "github_team_settings" "this" {
   for_each = var.teams
 
-  team_id = github_team.this[each.key].id
+  team_id = github_team.this[each.key].slug
+  notify  = each.value.notify
+
   review_request_delegation {
     algorithm    = each.value.review_request_delegation_algorithm
     member_count = each.value.review_request_delegation_member_count
-    notify       = each.value.review_request_delegation_notify
   }
-  depends_on = [github_team.this]
 }
 
 # https://registry.terraform.io/providers/integrations/github/latest/docs/resources/membership
@@ -78,18 +88,20 @@ resource "github_membership" "this" {
 # https://registry.terraform.io/providers/integrations/github/latest/docs/resources/team_members
 # This resource allows you to add/remove members from your teams.
 resource "github_team_members" "this" {
-  for_each = var.teams
+  for_each = { for team_name, team in var.teams : team_name => team if length([for _, user in var.members : user if team.all_users_team || contains(user.teams, "*") || contains(user.teams, team_name)]) > 0 }
 
-  team_id = github_team.this[each.key].id
+  team_slug = github_team.this[each.key].slug
 
   dynamic "members" {
-    for_each = { for name, user in var.members : name => user.role if try(user.teams[0], "") == "*" || contains(user.teams, each.key) || each.value.all_users_team }
+    for_each = {
+      for name, user in var.members : name => user.role
+      if each.value.all_users_team || contains(user.teams, "*") || contains(user.teams, each.key)
+    }
     content {
-      username = members.key
+      username = github_membership.this[members.key].username
       role     = members.value == "admin" ? "maintainer" : "member"
     }
   }
-  depends_on = [github_team.this, github_membership.this]
 }
 
 # https://registry.terraform.io/providers/integrations/github/latest/docs/resources/organization_block
@@ -97,8 +109,7 @@ resource "github_team_members" "this" {
 resource "github_organization_block" "this" {
   for_each = { for name, user in var.members : name => user.blocked if user.blocked }
 
-  username   = each.key
-  depends_on = [github_team.this, github_membership.this]
+  username = github_membership.this[each.key].username
 }
 
 # https://registry.terraform.io/providers/integrations/github/latest/docs/resources/repository
@@ -128,25 +139,60 @@ resource "github_repository" "this" {
   web_commit_signoff_required = each.value.web_commit_signoff_required
   topics                      = each.value.topics
   auto_init                   = true
-  vulnerability_alerts        = true
 
-  dynamic "security_and_analysis" {
-    for_each = each.value.visibility == "public" ? [1] : []
-    content {
-      secret_scanning {
+  security_and_analysis {
+    dynamic "advanced_security" {
+      for_each = each.value.advanced_security ? [1] : []
+      content {
         status = "enabled"
       }
-      secret_scanning_push_protection {
+    }
+    dynamic "code_security" {
+      for_each = each.value.code_security ? [1] : []
+      content {
+        status = "enabled"
+      }
+    }
+    dynamic "secret_scanning" {
+      for_each = each.value.secret_scanning ? [1] : []
+      content {
+        status = "enabled"
+      }
+    }
+    dynamic "secret_scanning_push_protection" {
+      for_each = each.value.secret_scanning_push_protection ? [1] : []
+      content {
+        status = "enabled"
+      }
+    }
+    dynamic "secret_scanning_ai_detection" {
+      for_each = each.value.secret_scanning_ai_detection ? [1] : []
+      content {
+        status = "enabled"
+      }
+    }
+    dynamic "secret_scanning_non_provider_patterns" {
+      for_each = each.value.secret_scanning_non_provider_patterns ? [1] : []
+      content {
         status = "enabled"
       }
     }
   }
 }
 
+# https://registry.terraform.io/providers/integrations/github/latest/docs/resources/repository_vulnerability_alerts
+# This resource enables Dependabot vulnerability alerts independently from the repository resource.
+resource "github_repository_vulnerability_alerts" "this" {
+  for_each = { for name, repo in var.repositories : name => repo if !repo.archived }
+
+  repository = github_repository.this[each.key].name
+  enabled    = true
+}
+
 # https://registry.terraform.io/providers/integrations/github/latest/docs/resources/branch_protection
 # This resource allows you to configure branch protection for repositories in your organization.
 resource "github_branch_protection" "this" {
-  for_each = { for name, repo in var.repositories : name => repo if repo.visibility == "public" }
+  for_each = { for name, repo in var.repositories : name => repo if !repo.archived && repo.visibility == "public" }
 
   repository_id = github_repository.this[each.key].node_id
 
@@ -169,25 +215,23 @@ resource "github_branch_protection" "this" {
     contexts = each.value.status_checks
     strict   = true
   }
-  depends_on = [github_repository.this]
 }
 
 # https://registry.terraform.io/providers/integrations/github/latest/docs/resources/branch_default
 # Configures the default branch for a GitHub repository.
 resource "github_branch_default" "main" {
-  for_each = var.repositories
+  for_each = { for name, repo in var.repositories : name => repo if !repo.archived }
 
-  repository = each.key
+  repository = github_repository.this[each.key].name
   branch     = coalesce(each.value.default_branch, "main")
-  depends_on = [github_repository.this]
 }
 
 # https://registry.terraform.io/providers/integrations/github/latest/docs/resources/issue_label
 # This resource allows you to create and manage issue labels within your GitHub organization.
 resource "github_issue_labels" "issue_labels" {
-  for_each = { for name, repo in var.repositories : name => repo.repository.issue_labels if length(repo.issue_labels) > 0 }
+  for_each = { for name, repo in var.repositories : name => repo.issue_labels if !repo.archived && length(repo.issue_labels) > 0 }
 
-  repository = each.key
+  repository = github_repository.this[each.key].name
 
   dynamic "label" {
     for_each = each.value
@@ -196,25 +240,22 @@ resource "github_issue_labels" "issue_labels" {
       color = label.value
     }
   }
-  depends_on = [github_repository.this]
 }
 
 # https://registry.terraform.io/providers/integrations/github/latest/docs/resources/repository_collaborators
 # This resource manages the complete set of collaborators for a repository, which includes both users and teams, in an authoritative manner.
 resource "github_repository_collaborators" "this" {
-  for_each = var.repositories
+  for_each = { for name, repo in var.repositories : name => repo if !repo.archived }
 
-  repository = each.key
+  repository = github_repository.this[each.key].name
 
   dynamic "team" {
     for_each = var.teams
     content {
       permission = coalesce(try(team.value.repo_permission_override[each.key], null), team.value.repo_permission)
-      team_id    = team.key
+      team_id    = github_team.this[team.key].slug
     }
   }
-
-  depends_on = [github_team.this, github_repository.this]
 }
 
 # https://registry.terraform.io/providers/integrations/github/latest/docs/resources/actions_organization_secret
@@ -262,24 +303,15 @@ resource "github_dependabot_organization_secret_repositories" "this" {
 # https://registry.terraform.io/providers/integrations/github/latest/docs/resources/organization_webhook
 # This resource allows you to create and manage GitHub organization webhooks.
 resource "github_organization_webhook" "this" {
-  for_each = { for v in var.webhooks : v["ident"] => {
-    active = v["active"]
-    events = v["events"]
-    configuration = {
-      url          = v["configuration"]["url"]
-      content_type = v["configuration"]["content_type"]
-      secret       = v["configuration"]["secret"]
-      insecure_ssl = v["configuration"]["insecure_ssl"]
-    } }
-  }
+  for_each = { for webhook in var.webhooks : webhook.ident => webhook }
 
-  active = each.value["active"]
-  events = each.value["events"]
+  active = each.value.active
+  events = each.value.events
 
   configuration {
-    url          = each.value["configuration"]["url"]
-    content_type = each.value["configuration"]["content_type"]
-    secret       = each.value["configuration"]["secret"]
-    insecure_ssl = each.value["configuration"]["insecure_ssl"]
+    url          = each.value.configuration.url
+    content_type = each.value.configuration.content_type
+    secret       = each.value.configuration.secret
+    insecure_ssl = each.value.configuration.insecure_ssl
   }
 }

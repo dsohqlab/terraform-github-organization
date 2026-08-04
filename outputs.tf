@@ -1,11 +1,11 @@
 output "name" {
   description = "GitHub Organization Name."
-  value       = var.settings.company
+  value       = var.settings.name
 }
 
 output "display_name" {
   description = "GitHub Organization Display Name."
-  value       = var.settings.name
+  value       = var.settings.display_name
 }
 
 output "teams" {

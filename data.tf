@@ -11,6 +11,6 @@ data "github_dependabot_organization_public_key" "this" {}
 
 # Use this data source to retrieve information about a GitHub repository.
 data "github_repository" "managed" {
-  for_each  = toset(distinct(flatten(concat([for k, v in var.secrets : v.repositories], [for k, v in var.bot_secrets : v.repositories], ))))
+  for_each  = toset(distinct(flatten(concat([for secret in values(var.secrets) : tolist(secret.repositories)], [for secret in values(var.bot_secrets) : tolist(secret.repositories)]))))
   full_name = "${data.github_organization.this.login}/${each.value}"
 }
