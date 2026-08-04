@@ -1,7 +1,7 @@
 # https://registry.terraform.io/providers/integrations/github/latest/docs/resources/organization_settings
 # Create and manage settings for a GitHub Organization.
 resource "github_organization_settings" "this" {
-  name                                                         = var.settings.name
+  name                                                         = var.settings.display_name
   company                                                      = var.settings.company
   description                                                  = var.settings.description
   email                                                        = var.settings.email
@@ -67,7 +67,7 @@ resource "github_team_settings" "this" {
 }
 
 # https://registry.terraform.io/providers/integrations/github/latest/docs/resources/membership
-# This resource allows you to add/remove users from your organization. 
+# This resource allows you to add/remove users from your organization.
 resource "github_membership" "this" {
   for_each = var.members
 
